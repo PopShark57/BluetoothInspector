@@ -68,12 +68,10 @@ struct RSSIIndicator: View {
 
     private var color: Color {
         guard let rssi else { return .secondary }
-        switch rssi {
-        case -60...: return .green
-        case -75 ..< -60: return .yellow
-        case -90 ..< -75: return .orange
-        default: return .red
-        }
+        if rssi >= -60 { return .green }
+        if rssi >= -75 { return .yellow }
+        if rssi >= -90 { return .orange }
+        return .red
     }
 
     var body: some View {

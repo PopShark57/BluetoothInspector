@@ -176,7 +176,7 @@ final class IOBluetoothClassicClient: NSObject, ClassicClient {
             isConnected: connected,
             rssi: RSSISample.isValid(rawRSSI) && rawRSSI != 0 ? rawRSSI : nil,
             lastInquiryUpdate: device.getLastInquiryUpdate(),
-            lastNameUpdate: device.getLastNameUpdate(),
+            // getLastNameUpdate() is deprecated and unavailable in Swift.
             lastServicesUpdate: device.getLastServicesUpdate(),
             serviceRecords: records,
             sources: sources.union(knownSources[address] ?? [])
