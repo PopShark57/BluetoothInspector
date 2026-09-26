@@ -55,14 +55,22 @@ public final class InspectedDevice: Identifiable {
     /// Name from the system (CoreBluetooth `peripheral.name` / IOBluetooth `name`).
     public var systemName: String?
     public var advertisement = AdvertisementData()
-    public private(set) var recentPackets = RingBuffer<AdvertisementPacket>(capacity: InspectedDevice.packetHistoryCapacity)
     public var advertisementPacketCount = 0
     public var advertisementChangeCount = 0
     public var lastAdvertisementChange: Date?
 
     public var rssi: Int?
-    public var rssiHistory = RSSIHistory()
     public var lastSeen: Date?
+
+    // High-rate histories are not observed directly: they change with every
+    // advertisement or notification. Views observe `historyRevision`, which
+    // the workspace bumps at most once per UI tick.
+    @ObservationIgnored public private(set) var rssiHistory = RSSIHistory()
+    @ObservationIgnored public private(set) var recentPackets = RingBuffer<AdvertisementPacket>(capacity: InspectedDevice.packetHistoryCapacity)
+    @ObservationIgnored public private(set) var valueHistory = RingBuffer<ValueRecord>(capacity: InspectedDevice.valueHistoryCapacity)
+    @ObservationIgnored private var historyDirty = false
+    /// Changes whenever any history above changed since the last UI tick.
+    public private(set) var historyRevision = 0
 
     public var connectionState: ConnectionState = .disconnected
     /// Connected to the Mac by the system or another app (not by us).
@@ -71,7 +79,6 @@ public final class InspectedDevice: Identifiable {
     public var maximumWriteLength: Int?
     public var maximumWriteWithoutResponseLength: Int?
     public var gatt = GATTTree()
-    public private(set) var valueHistory = RingBuffer<ValueRecord>(capacity: InspectedDevice.valueHistoryCapacity)
     public var lastError: String?
 
     public var classic: ClassicDeviceInfo?
@@ -129,14 +136,42 @@ public final class InspectedDevice: Identifiable {
 
     func appendPacket(_ packet: AdvertisementPacket) {
         recentPackets.append(packet)
+        historyDirty = true
     }
 
     func appendValue(_ record: ValueRecord) {
         valueHistory.append(record)
+        historyDirty = true
+    }
+
+    /// Records a valid RSSI reading (updating `rssi`); returns false for 127/out-of-range.
+    @discardableResult
+    func recordRSSI(_ value: Int, at date: Date) -> Bool {
+        guard rssiHistory.record(value, at: date) else { return false }
+        rssi = value
+        historyDirty = true
+        return true
+    }
+
+    /// Publishes history changes to observers. Returns true if anything changed.
+    @discardableResult
+    public func publishHistory() -> Bool {
+        guard historyDirty else { return false }
+        historyDirty = false
+        historyRevision &+= 1
+        return true
     }
 
     public func clearValueHistory() {
         valueHistory.removeAll()
+        historyDirty = true
+        publishHistory()
+    }
+
+    public func clearRSSIHistory() {
+        rssiHistory.clear()
+        historyDirty = true
+        publishHistory()
     }
 
     /// Characteristic + descriptor UUIDs/names for search.

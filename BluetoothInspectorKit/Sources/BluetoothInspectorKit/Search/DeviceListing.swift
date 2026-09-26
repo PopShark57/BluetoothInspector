@@ -17,6 +17,8 @@ public struct DeviceListItem: Identifiable, Hashable, Sendable {
     public let isFavorite: Bool
     public let isSaved: Bool
     public let isSystemConnected: Bool
+    /// False for saved devices that have not been seen in this session.
+    public let isLive: Bool
     public let serviceUUIDs: [BluetoothUUID]
     /// Extra text matched by search (GATT UUIDs and names, notes…).
     public let searchText: String
@@ -36,6 +38,7 @@ public struct DeviceListItem: Identifiable, Hashable, Sendable {
         isFavorite: Bool = false,
         isSaved: Bool = false,
         isSystemConnected: Bool = false,
+        isLive: Bool = true,
         serviceUUIDs: [BluetoothUUID] = [],
         searchText: String = ""
     ) {
@@ -53,6 +56,7 @@ public struct DeviceListItem: Identifiable, Hashable, Sendable {
         self.isFavorite = isFavorite
         self.isSaved = isSaved
         self.isSystemConnected = isSystemConnected
+        self.isLive = isLive
         self.serviceUUIDs = serviceUUIDs
         self.searchText = searchText
     }

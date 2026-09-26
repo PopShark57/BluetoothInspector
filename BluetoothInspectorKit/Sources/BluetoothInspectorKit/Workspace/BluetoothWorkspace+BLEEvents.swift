@@ -55,8 +55,7 @@ extension BluetoothWorkspace {
             guard let device = device(.lowEnergy(uuid)) else { return }
             if let error {
                 log.append(.error, "RSSI read failed: \(error)", deviceID: device.id, deviceName: device.name)
-            } else if let rssi, device.rssiHistory.record(rssi, at: date) {
-                device.rssi = rssi
+            } else if let rssi, device.recordRSSI(rssi, at: date) {
                 device.lastSeen = date
                 if settings.logRSSIReadings {
                     log.append(.rssi, "\(rssi) dBm", deviceID: device.id, deviceName: device.name, at: date)
@@ -162,9 +161,7 @@ extension BluetoothWorkspace {
         device.appendPacket(AdvertisementPacket(timestamp: date, rssi: rssi, advertisement: advertisement))
         device.advertisementPacketCount += 1
         device.lastSeen = date
-        if let rssi, device.rssiHistory.record(rssi, at: date) {
-            device.rssi = rssi
-        }
+        if let rssi { device.recordRSSI(rssi, at: date) }
         if isNew {
             log.append(.scan, "Found \(device.displayName)" + (merged.isConnectable == false ? " (non-connectable)" : ""),
                        deviceID: id, deviceName: device.name, at: date)
@@ -189,6 +186,9 @@ extension BluetoothWorkspace {
         let device = ensureDevice(id, at: now())
         device.connectionState = .connected
         device.connectedAt = now()
+        // CoreBluetooth creates fresh attribute objects for every connection,
+        // so a previous session's tree cannot be reused.
+        device.gatt = GATTTree()
         device.lastError = nil
         device.maximumWriteLength = maxWrite
         device.maximumWriteWithoutResponseLength = maxWriteWithoutResponse

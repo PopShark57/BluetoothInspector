@@ -1,0 +1,81 @@
+name: CI
+
+on:
+  push:
+    branches: [main, "claude/**"]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  kit-linux:
+    name: Kit tests (Linux, Swift 6.2)
+    runs-on: ubuntu-latest
+    container: swift:6.2-noble
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test BluetoothInspectorKit
+        run: swift test --package-path BluetoothInspectorKit
+
+  macos:
+    name: macOS app (${{ matrix.runner }})
+    strategy:
+      fail-fast: false
+      matrix:
+        # xcode-27: Xcode 27 / macOS 27 SDK (the primary target).
+        # macos-26: Xcode 26 / macOS 26 SDK, to keep the project buildable on the previous toolchain.
+        runner: [xcode-27, macos-26]
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchain
+        run: |
+          xcodebuild -version
+          swift --version
+          xcrun --sdk macosx --show-sdk-version
+      - name: Test BluetoothInspectorKit
+        run: swift test --package-path BluetoothInspectorKit
+      - name: Build app
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project BluetoothInspector.xcodeproj \
+            -scheme BluetoothInspector \
+            -configuration Debug \
+            -destination 'platform=macOS' \
+            -derivedDataPath build/DerivedData \
+            CODE_SIGNING_ALLOWED=NO \
+            build 2>&1 | tee build.log
+      - name: Build app (Release)
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project BluetoothInspector.xcodeproj \
+            -scheme BluetoothInspector \
+            -configuration Release \
+            -destination 'generic/platform=macOS' \
+            -derivedDataPath build/DerivedData \
+            CODE_SIGNING_ALLOWED=NO \
+            build 2>&1 | tee build-release.log
+      - name: Summarize warnings
+        if: always()
+        run: |
+          {
+            echo "## Compiler diagnostics (${{ matrix.runner }})"
+            echo '```'
+            cat build.log build-release.log 2>/dev/null | grep -E "(error|warning):" | grep -v "^ld: warning: ignoring duplicate" | sort -u || echo "none"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          cat build.log build-release.log 2>/dev/null | grep -E "(error|warning):" | sort -u || true
+      - name: Upload build logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs-${{ matrix.runner }}
+          path: |
+            build.log
+            build-release.log
+          if-no-files-found: ignore

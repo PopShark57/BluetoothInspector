@@ -81,9 +81,7 @@ extension BluetoothWorkspace {
         let device = ensureDevice(id, at: date)
         device.classic = device.classic.map { $0.merging(info) } ?? info
         device.systemName = device.classic?.name
-        if let rssi = info.rssi, device.rssiHistory.record(rssi, at: now()) {
-            device.rssi = rssi
-        }
+        if let rssi = info.rssi { device.recordRSSI(rssi, at: now()) }
         if info.sources.contains(.inquiry) || info.isConnected {
             device.lastSeen = now()
         } else if device.lastSeen == nil {

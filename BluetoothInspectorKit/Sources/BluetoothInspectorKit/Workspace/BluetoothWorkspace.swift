@@ -122,6 +122,7 @@ public final class BluetoothWorkspace {
         let date = now()
         refreshDeviceListIfNeeded()
         log.flush()
+        for device in devices.values { device.publishHistory() }
         pollRSSIIfNeeded(at: date)
         if date.timeIntervalSince(lastHistorySave) > 2 { saveHistoryIfNeeded() }
     }
@@ -149,6 +150,12 @@ public final class BluetoothWorkspace {
 
     func markListDirty() { listDirty = true }
 
+    /// Forces the device table to rebuild (e.g. after SIG names changed).
+    public func markAllDevicesChanged() {
+        listDirty = true
+        refreshDeviceListIfNeeded()
+    }
+
     public func refreshDeviceListIfNeeded(force: Bool = false) {
         guard listDirty || force else { return }
         listDirty = false
@@ -159,7 +166,7 @@ public final class BluetoothWorkspace {
             items.append(DeviceListItem(
                 id: saved.id, name: saved.name, displayName: saved.displayName, transport: saved.transport,
                 rssi: nil, manufacturer: saved.manufacturer, lastSeen: saved.lastSeen,
-                isFavorite: saved.isFavorite, isSaved: true, serviceUUIDs: saved.knownServices,
+                isFavorite: saved.isFavorite, isSaved: true, isLive: false, serviceUUIDs: saved.knownServices,
                 searchText: saved.notes
             ))
         }
