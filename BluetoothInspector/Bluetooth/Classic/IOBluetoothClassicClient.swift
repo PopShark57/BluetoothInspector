@@ -19,9 +19,16 @@ import OSLog
 /// Those either change device state (this is an inspector) or are not
 /// available to sandboxed apps.
 ///
-/// IOBluetooth delivers callbacks on the run loop that started the
-/// operation. Every operation here starts on the main thread, so callbacks
-/// arrive on the main actor.
+/// Threading: IOBluetooth does *not* reliably call back on the thread that
+/// started an operation. Connect/disconnect notifications in particular are
+/// posted on IOBluetooth's own coordination queue (and, at registration,
+/// immediately for every device that is already connected). A main-actor
+/// `@objc` method called there fails Swift's runtime isolation check
+/// (`_dispatch_assert_queue_fail`). So every IOBluetooth entry point is
+/// `nonisolated`, takes only the device address off the callback queue, and
+/// hops to the main actor, where the device is re-resolved by address
+/// (IOBluetooth keeps a single `IOBluetoothDevice` instance per address) and
+/// read. `IOBluetoothDevice` itself is not thread-safe and never crosses threads.
 @MainActor
 final class IOBluetoothClassicClient: NSObject, ClassicClient {
     var eventHandler: (@MainActor (ClassicEvent) -> Void)?
@@ -40,6 +47,22 @@ final class IOBluetoothClassicClient: NSObject, ClassicClient {
 
     private func emit(_ event: ClassicEvent) {
         eventHandler?(event)
+    }
+
+    /// Runs `body` on the main actor: inline when the callback already arrived
+    /// on the main thread, otherwise asynchronously (preserving callback order).
+    private nonisolated func deliver(_ body: @escaping @MainActor @Sendable () -> Void) {
+        if Thread.isMainThread {
+            MainActor.assumeIsolated { body() }
+        } else {
+            DispatchQueue.main.async { MainActor.assumeIsolated { body() } }
+        }
+    }
+
+    /// The only property read on an IOBluetooth callback queue.
+    private nonisolated static func address(of device: IOBluetoothDevice?) -> String? {
+        guard let address = device?.addressString, !address.isEmpty else { return nil }
+        return address
     }
 
     // MARK: Host controller
@@ -131,26 +154,38 @@ final class IOBluetoothClassicClient: NSObject, ClassicClient {
         }
     }
 
-    /// IOBluetooth's informal SDP completion callback.
-    @objc func sdpQueryComplete(_ device: IOBluetoothDevice, status: IOReturn) {
-        let info = info(for: device, sources: [])
-        emit(.sdpQueryCompleted(info, error: status == kIOReturnSuccess ? nil : Self.describe(status)))
+    /// IOBluetooth's informal SDP completion callback (may arrive off the main thread).
+    @objc nonisolated func sdpQueryComplete(_ device: IOBluetoothDevice, status: IOReturn) {
+        guard let address = Self.address(of: device) else { return }
+        deliver { [weak self] in
+            guard let self, let device = IOBluetoothDevice(addressString: address) else { return }
+            emit(.sdpQueryCompleted(info(for: device, sources: []),
+                                    error: status == kIOReturnSuccess ? nil : Self.describe(status)))
+        }
     }
 
     // MARK: Connection notifications
 
-    @objc private func deviceDidConnect(_ notification: IOBluetoothUserNotification, device: IOBluetoothDevice) {
-        watchDisconnect(of: device)
-        var info = info(for: device, sources: [.connected])
-        info.isConnected = true
-        emit(.deviceConnected(info))
+    // Posted on IOBluetooth's coordination queue, not the main thread.
+    @objc private nonisolated func deviceDidConnect(_ notification: IOBluetoothUserNotification, device: IOBluetoothDevice) {
+        guard let address = Self.address(of: device) else { return }
+        deliver { [weak self] in
+            guard let self, let device = IOBluetoothDevice(addressString: address) else { return }
+            watchDisconnect(of: device)
+            var info = info(for: device, sources: [.connected])
+            info.isConnected = true
+            emit(.deviceConnected(info))
+        }
     }
 
-    @objc private func deviceDidDisconnect(_ notification: IOBluetoothUserNotification, device: IOBluetoothDevice) {
-        notification.unregister()
-        guard let address = device.addressString else { return }
-        disconnectNotifications[ClassicDeviceInfo.normalize(address: address)] = nil
-        emit(.deviceDisconnected(address: address))
+    @objc private nonisolated func deviceDidDisconnect(_ notification: IOBluetoothUserNotification, device: IOBluetoothDevice) {
+        guard let address = Self.address(of: device) else { return }
+        deliver { [weak self] in
+            guard let self else { return }
+            // Unregister through our stored reference so the notification object stays on the main thread.
+            disconnectNotifications.removeValue(forKey: ClassicDeviceInfo.normalize(address: address))?.unregister()
+            emit(.deviceDisconnected(address: address))
+        }
     }
 
     private func watchDisconnect(of device: IOBluetoothDevice) {
@@ -208,24 +243,35 @@ final class IOBluetoothClassicClient: NSObject, ClassicClient {
 
 // MARK: - IOBluetoothDeviceInquiryDelegate
 
-extension IOBluetoothClassicClient: @preconcurrency IOBluetoothDeviceInquiryDelegate {
-    func deviceInquiryStarted(_ sender: IOBluetoothDeviceInquiry!) {
-        emit(.inquiryStarted)
+// Like the other IOBluetooth callbacks, these are not guaranteed to arrive on
+// the main thread, so they are nonisolated and hop to the main actor.
+extension IOBluetoothClassicClient: IOBluetoothDeviceInquiryDelegate {
+    nonisolated func deviceInquiryStarted(_ sender: IOBluetoothDeviceInquiry!) {
+        deliver { [weak self] in self?.emit(.inquiryStarted) }
     }
 
-    func deviceInquiryDeviceFound(_ sender: IOBluetoothDeviceInquiry!, device: IOBluetoothDevice!) {
-        guard let device else { return }
-        emit(.inquiryDeviceFound(info(for: device, sources: [.inquiry])))
+    nonisolated func deviceInquiryDeviceFound(_ sender: IOBluetoothDeviceInquiry!, device: IOBluetoothDevice!) {
+        guard let address = Self.address(of: device) else { return }
+        deliver { [weak self] in
+            guard let self, let device = IOBluetoothDevice(addressString: address) else { return }
+            emit(.inquiryDeviceFound(info(for: device, sources: [.inquiry])))
+        }
     }
 
-    func deviceInquiryDeviceNameUpdated(_ sender: IOBluetoothDeviceInquiry!, device: IOBluetoothDevice!, devicesRemaining: UInt32) {
-        guard let device else { return }
-        emit(.inquiryDeviceUpdated(info(for: device, sources: [.inquiry])))
+    nonisolated func deviceInquiryDeviceNameUpdated(_ sender: IOBluetoothDeviceInquiry!, device: IOBluetoothDevice!, devicesRemaining: UInt32) {
+        guard let address = Self.address(of: device) else { return }
+        deliver { [weak self] in
+            guard let self, let device = IOBluetoothDevice(addressString: address) else { return }
+            emit(.inquiryDeviceUpdated(info(for: device, sources: [.inquiry])))
+        }
     }
 
-    func deviceInquiryComplete(_ sender: IOBluetoothDeviceInquiry!, error: IOReturn, aborted: Bool) {
-        isInquiryRunning = false
-        inquiry = nil
-        emit(.inquiryFinished(error: error == kIOReturnSuccess ? nil : Self.describe(error), aborted: aborted))
+    nonisolated func deviceInquiryComplete(_ sender: IOBluetoothDeviceInquiry!, error: IOReturn, aborted: Bool) {
+        deliver { [weak self] in
+            guard let self else { return }
+            isInquiryRunning = false
+            inquiry = nil
+            emit(.inquiryFinished(error: error == kIOReturnSuccess ? nil : Self.describe(error), aborted: aborted))
+        }
     }
 }
